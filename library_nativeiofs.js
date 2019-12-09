@@ -100,14 +100,14 @@ mergeInto(LibraryManager.library, {
       getattr: function(node) {
         NATIVEIOFS.debug('getattr', arguments);
         return NATIVEIOFS.profile('getattr', function() {
-          var metadata = null;
+          var attributes = null;
           if (node.handle) {
-            metadata = node.handle.getAttributes();
+            attributes = node.handle.getAttributes();
           } else {
             try {
               var path = NATIVEIOFS.realPath(node);
               var handle = io.openFile(path);
-              metadata = handle.getAttributes();
+              attributes = handle.getAttributes();
             } catch (e) {
               if (!('code' in e)) throw e;
               throw new FS.ErrnoError(-e.errno);
@@ -117,6 +117,7 @@ mergeInto(LibraryManager.library, {
               }
             }
           }
+          var modificationTime = new Date();
           return {
             dev: null,
             ino: null,
@@ -125,12 +126,12 @@ mergeInto(LibraryManager.library, {
             uid: 0,
             gid: 0,
             rdev: null,
-            size: metadata.size,
-            atime: metadata.modificationTime,
-            mtime: metadata.modificationTime,
-            ctime: metadata.modificationTime,
+            size: attributes.size,
+            atime: modificationTime,
+            mtime: modificationTime,
+            ctime: modificationTime,
             blksize: 4096,
-            blocks: (metadata.size+4096-1)/4096|0,
+            blocks: (attributes.size+4096-1)/4096|0,
           };
         });
       },
