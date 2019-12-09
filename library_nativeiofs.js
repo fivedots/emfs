@@ -323,11 +323,16 @@ mergeInto(LibraryManager.library, {
         });
       },
 
-      // TODO(jabolopes): Check if this actually being called. So far couldn't
-      // find any callers.
       fsync: function(stream) {
         NATIVEIOFS.debug('fsync', arguments);
-        return 0;
+        return NATIVEIOFS.profile('fsync', function() {
+          if (stream.handle == null) {
+            return ERRNO_CODES.EBADF;
+          }
+
+          stream.handle.sync();
+          return 0;
+        });
       },
 
       // TODO(jabolopes): Switch read to the new interface.
