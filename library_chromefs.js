@@ -11,11 +11,16 @@ mergeInto(LibraryManager.library, {
       'console.log("VFS", VFS);' +
       '}',
   $CHROMEFS: {
+
+    /* Debugging */
+
     debug: function(...args) {
       // Uncomment to print debug information.
       //
       // console.log('chromefs', arguments);
     },
+
+    /* Profiling */
 
     profileData: {},
 
@@ -39,12 +44,8 @@ mergeInto(LibraryManager.library, {
       return result;
     },
 
-    mount: function (mount) {
-      CHROMEFS.debug('mount', arguments);
-      var node = CHROMEFS.createNode(null, '/', {{{ cDefine('S_IFDIR') }}} | 511 /* 0777 */, 0);
-      node.localReference = VFS.root;
-      return node;
-    },
+    /* Filesystem implementation (public interface) */
+
     createNode: function (parent, name, mode, dev) {
       CHROMEFS.debug('createNode', arguments);
       if (!FS.isDir(mode) && !FS.isFile(mode)) {
@@ -55,26 +56,28 @@ mergeInto(LibraryManager.library, {
       node.stream_ops = CHROMEFS.stream_ops;
       return node;
     },
+
+    mount: function (mount) {
+      CHROMEFS.debug('mount', arguments);
+      var node = CHROMEFS.createNode(null, '/', {{{ cDefine('S_IFDIR') }}} | 511 /* 0777 */, 0);
+      node.localReference = VFS.root;
+      return node;
+    },
+
     cwd: function() { return process.cwd(); },
+
     chdir: function() { process.chdir.apply(void 0, arguments); },
-    mkdir: function() { fs.mkdirSync.apply(void 0, arguments); },
-    symlink: function() { fs.symlinkSync.apply(void 0, arguments); },
-    rename: function() { fs.renameSync.apply(void 0, arguments); },
-    rmdir: function() { fs.rmdirSync.apply(void 0, arguments); },
-    readdir: function() { fs.readdirSync.apply(void 0, arguments); },
-    unlink: function() { fs.unlinkSync.apply(void 0, arguments); },
-    readlink: function() { return fs.readlinkSync.apply(void 0, arguments); },
-    chmod: function() { fs.chmodSync.apply(void 0, arguments); },
-    fchmod: function() { fs.fchmodSync.apply(void 0, arguments); },
-    chown: function() { fs.chownSync.apply(void 0, arguments); },
-    fchown: function() { fs.fchownSync.apply(void 0, arguments); },
-    utime: function() { fs.utimesSync.apply(void 0, arguments); },
+
     allocate: function() {
       throw new FS.ErrnoError(ERRNO_CODES.EOPNOTSUPP);
     },
+
     ioctl: function() {
       throw new FS.ErrnoError(ERRNO_CODES.ENOTTY);
     },
+
+    /* Operations on the nodes of the filesystem tree */
+
     node_ops: {
       getattr: function(node) {
         CHROMEFS.debug('getattr', arguments);
@@ -103,10 +106,21 @@ mergeInto(LibraryManager.library, {
           };
         });
       },
+
       setattr: function(node, attr) {
         CHROMEFS.debug('setattr', arguments);
-        throw new FS.ErrnoError({{{ cDefine('EPERM') }}});
+        CHROMEFS.profile('setattr', function() {
+          if ('size' in attr) {
+            data = new ArrayBuffer(attr.size);
+            var blob = new Blob([data]);
+            var writer = node.localReference.createWriter();
+            writer.write(blob);
+          } else {
+            throw new FS.ErrnoError({{{ cDefine('EPERM') }}});
+          }
+        });
       },
+
       lookup: function (parent, name) {
         CHROMEFS.debug('lookup', arguments);
         return CHROMEFS.profile('lookup', function() {
@@ -127,89 +141,97 @@ mergeInto(LibraryManager.library, {
           node.node_ops = CHROMEFS.node_ops;
           node.stream_ops = CHROMEFS.stream_ops;
           node.localReference = childLocalReference;
-          console.log('lookup', node);
           return node;
         });
       },
+
       mknod: function (parent, name, mode, dev) {
         CHROMEFS.debug('mknod', arguments);
-        var node = CHROMEFS.createNode(parent, name, mode, dev);
-        try {
-          if (FS.isDir(mode)) {
-            node.localReference = parent.localReference.getDirectory(name, {create: true});
-          } else if (FS.isFile(mode)) {
-            node.localReference = parent.localReference.getFile(name, {create: true});
+        return CHROMEFS.profile('mknod', function() {
+          var node = CHROMEFS.createNode(parent, name, mode, dev);
+          try {
+            if (FS.isDir(mode)) {
+              node.localReference = parent.localReference.getDirectory(name, {create: true});
+            } else if (FS.isFile(mode)) {
+              node.localReference = parent.localReference.getFile(name, {create: true});
+            }
+          } catch (e) {
+            if (!e.code) throw e;
+            throw new FS.ErrnoError(e.errno);
           }
-        } catch (e) {
-          if (!e.code) throw e;
-          throw new FS.ErrnoError(e.errno);
-        }
-        return node;
+          return node;
+        });
       },
-      rename: function (oldNode, newDir, newName) {
+
+      rename: function (oldNode, newParentNode, newName) {
         CHROMEFS.debug('rename', arguments);
-        var oldPath = NODEFS.realPath(oldNode);
-        var newPath = PATH.join2(NODEFS.realPath(newDir), newName);
-        try {
-          fs.renameSync(oldPath, newPath);
-        } catch (e) {
-          if (!e.code) throw e;
-          throw new FS.ErrnoError(-e.errno);
-        }
+        CHROMEFS.profile('rename', function() {
+          try {
+            oldNode.localReference.moveTo(newParentNode.localReference, newName);
+          } catch (e) {
+            if (!e.code) throw e;
+            throw new FS.ErrnoError(-e.errno);
+          }
+        });
       },
+
       unlink: function(parent, name) {
         CHROMEFS.debug('unlink', arguments);
-        var childLocalReference = null;
-        try {
-          childLocalReference = parent.localReference.getDirectory(name, {create: false});
-        } catch (e) {
+        CHROMEFS.profile('unlink', function() {
+          var childLocalReference = null;
           try {
-            childLocalReference = parent.localReference.getFile(name, {create: false});
+            childLocalReference = parent.localReference.getDirectory(name, {create: false});
+          } catch (e) {
+            try {
+              childLocalReference = parent.localReference.getFile(name, {create: false});
+            } catch (e) {
+              throw FS.genericErrors[{{{ cDefine('ENOENT') }}}];
+            }
+          }
+          childLocalReference.remove();
+        });
+      },
+
+      rmdir: function(parent, name) {
+        CHROMEFS.debug('rmdir', arguments);
+        CHROMEFS.profile('rmdir', function() {
+          var childLocalReference = null;
+          try {
+            childLocalReference = parent.localReference.getDirectory(name, {create: false});
           } catch (e) {
             throw FS.genericErrors[{{{ cDefine('ENOENT') }}}];
           }
-        }
-        childLocalReference.remove();
+          childLocalReference.remove();
+        });
       },
-      rmdir: function(parent, name) {
-        var path = PATH.join2(NODEFS.realPath(parent), name);
-        try {
-          fs.rmdirSync(path);
-        } catch (e) {
-          if (!e.code) throw e;
-          throw new FS.ErrnoError(-e.errno);
-        }
-      },
+
       readdir: function(node) {
-        var path = NODEFS.realPath(node);
-        try {
-          return fs.readdirSync(path);
-        } catch (e) {
-          if (!e.code) throw e;
-          throw new FS.ErrnoError(-e.errno);
-        }
+        CHROMEFS.debug('readdir', arguments);
+        return CHROMEFS.profile('readdir', function() {
+          try {
+            var entries = node.localReference.createReader().readEntries();
+            return entries.map(entry => entry.name);
+          } catch (e) {
+            if (!e.code) throw e;
+            throw new FS.ErrnoError(-e.errno);
+          }
+        });
       },
+
       symlink: function(parent, newName, oldPath) {
-        var newPath = PATH.join2(NODEFS.realPath(parent), newName);
-        try {
-          fs.symlinkSync(oldPath, newPath);
-        } catch (e) {
-          if (!e.code) throw e;
-          throw new FS.ErrnoError(-e.errno);
-        }
+        throw new FS.ErrnoError(ERRNO_CODES.EPERM);
       },
+
       readlink: function(node) {
-        var path = NODEFS.realPath(node);
-        try {
-          path = fs.readlinkSync(path);
-          path = NODEJS_PATH.relative(NODEJS_PATH.resolve(node.mount.opts.root), path);
-          return path;
-        } catch (e) {
-          if (!e.code) throw e;
-          throw new FS.ErrnoError(-e.errno);
-        }
+	// readlink(2) does not seem to have an errno for operation not
+	// supported. Since NativeIO FS does not support symlinks, return EINVAL
+	// for file not being a symlink.
+        throw new FS.ErrnoError(ERRNO_CODES.EINVAL);
       },
     },
+
+    /* Operations on file streams (i.e., file handles) */
+
     stream_ops: {
       open: function (stream) {
         CHROMEFS.debug('open', arguments);
@@ -226,6 +248,7 @@ mergeInto(LibraryManager.library, {
           }
         });
       },
+
       close: function (stream) {
         CHROMEFS.debug('close', arguments);
         CHROMEFS.profile('close', function() {
@@ -244,10 +267,14 @@ mergeInto(LibraryManager.library, {
           }
         });
       },
+
       fsync: function(stream) {
         CHROMEFS.debug('fsync', arguments);
-        return 0;
+        return CHROMEFS.profile('fsync', function() {
+          return 0;
+        });
       },
+
       read: function (stream, buffer, offset, length, position) {
         CHROMEFS.debug('read', arguments);
         return CHROMEFS.profile('read', function() {
@@ -264,6 +291,7 @@ mergeInto(LibraryManager.library, {
           });
         });
       },
+
       write: function (stream, buffer, offset, length, position) {
         CHROMEFS.debug('write', arguments);
         return CHROMEFS.profile('write', function() {
@@ -276,6 +304,7 @@ mergeInto(LibraryManager.library, {
           return bytesWritten;
         });
       },
+
       llseek: function (stream, offset, whence) {
         CHROMEFS.debug('llseek', arguments);
         return CHROMEFS.profile('llseek', function() {
@@ -295,6 +324,7 @@ mergeInto(LibraryManager.library, {
           return position;
         });
       },
+
       mmap: function(stream, buffer, offset, length, position, prot, flags) {
         CHROMEFS.debug('mmap', arguments);
 
@@ -311,6 +341,7 @@ mergeInto(LibraryManager.library, {
 
         return { ptr: ptr, allocated: true };
       },
+
       msync: function(stream, buffer, offset, length, mmapFlags) {
         CHROMEFS.debug('msync', arguments);
 
@@ -319,6 +350,7 @@ mergeInto(LibraryManager.library, {
 
         return 0;
       },
+
       munmap: function(stream) {
         CHROMEFS.debug('munmap', arguments);
         return 0;
