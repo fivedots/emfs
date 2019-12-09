@@ -46,17 +46,42 @@ mergeInto(LibraryManager.library, {
     /* Helper functions */
 
     realPath: function(node) {
-      // Computes the real path and replaces '/' with '_' because the low-level
-      // IO API doesn't know what directories are and does not allow '/'.
-      return NODEFS.realPath(node).replace(/\//g, '_');
+      var parts = [];
+      while (node.parent !== node) {
+        parts.push(node.name);
+        node = node.parent;
+      }
+      if (!parts.length) {
+        return '_';
+      }
+      parts.push('');
+      parts.reverse();
+      return parts.join('_');
     },
 
     baseName: function(path) {
       return path.split('_').pop();
     },
 
-    joinPaths: function(...paths) {
-      return paths.join('_');
+    joinPaths: function(path1, path2) {
+      if (path1.endsWith('_')) {
+        if (path2.startsWith('_')) {
+          return path1.slice(0, -1) + path2;
+        }
+        return path1 + path2;
+      } else {
+        if (path2.startsWith('_')) {
+          return path1 + path2;
+        }
+        return path1 + '_' + path2;
+      }
+    },
+
+    directoryPath: function(path) {
+      if (path.length && path.slice(-1) == '_') {
+        return path;
+      }
+      return path + '_';
     },
 
     /* Filesystem implementation (public interface) */
@@ -165,7 +190,7 @@ mergeInto(LibraryManager.library, {
       lookup: function (parent, name) {
         NATIVEIOFS.debug('lookup', arguments);
         return NATIVEIOFS.profile('lookup', function() {
-          var parentPath = NATIVEIOFS.realPath(parent) + '_';
+          var parentPath = NATIVEIOFS.directoryPath(NATIVEIOFS.realPath(parent));
 
 	  var children = io.listByPrefix(parentPath);
 
@@ -179,7 +204,7 @@ mergeInto(LibraryManager.library, {
               break;
             }
 
-            subdirName = name + '_';
+            subdirName = NATIVEIOFS.directoryPath(name);
             if (path.startsWith(subdirName)) {
               exists = true;
               mode |= {{{ cDefine('S_IFDIR') }}};
@@ -250,13 +275,15 @@ mergeInto(LibraryManager.library, {
 
       rmdir: function(parent, name) {
         NATIVEIOFS.debug('rmdir', arguments);
-        return MEMFS.rmddir(parent, name);
+        NATIVEIOFS.profile('rmdir', function() {
+          MEMFS.rmddir(parent, name);
+        });
       },
 
       readdir: function(node) {
         NATIVEIOFS.debug('readdir', arguments);
 	return NATIVEIOFS.profile('readdir', function() {
-          var parentPath = NATIVEIOFS.realPath(node) + '_';
+          var parentPath = NATIVEIOFS.directoryPath(NATIVEIOFS.realPath(node));
 	  // TODO(jabolopes): If there are subdirectories, I suspect this may
 	  // return duplicate entries. We probably need not just a list by
 	  // prefix but a listByPrefix up to the next underscore ('_').
