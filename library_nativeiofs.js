@@ -51,7 +51,7 @@ mergeInto(LibraryManager.library, {
       return NODEFS.realPath(node).replace(/\//g, '_');
     },
 
-    realPathName: function(path) {
+    baseName: function(path) {
       return path.split('_').pop();
     },
 
@@ -106,7 +106,7 @@ mergeInto(LibraryManager.library, {
           } else {
             try {
               var path = NATIVEIOFS.realPath(node);
-              var handle = io.open(path);
+              var handle = io.openFile(path);
               metadata = handle.getAttributes();
             } catch (e) {
               if (!('code' in e)) throw e;
@@ -139,13 +139,24 @@ mergeInto(LibraryManager.library, {
         NATIVEIOFS.debug('setattr', arguments);
 	NATIVEIOFS.profile('setattr', function() {
           if ('size' in attr) {
-            // TODO: Update mtime after truncation
-            var path = NATIVEIOFS.realPath(node);
-	    var attributes = new FileAttributes();
-	    attributes.size = attr.size;
-            io.setAttributes(path, attributes);
-          } else {
-            throw new FS.ErrnoError(ERRNO_CODES.EPERM);
+            if (node.handle) {
+              metadata = node.handle.getAttributes();
+            } else {
+              try {
+                var path = NATIVEIOFS.realPath(node);
+                var handle = io.openFile(path);
+
+	        var attributes = { size: attr.size };
+                handle.setAttributes(attributes);
+              } catch (e) {
+                if (!('code' in e)) throw e;
+                throw new FS.ErrnoError(-e.errno);
+              } finally {
+                if (handle) {
+                  handle.close();
+                }
+              }
+            }
           }
 	});
       },
@@ -153,12 +164,31 @@ mergeInto(LibraryManager.library, {
       lookup: function (parent, name) {
         NATIVEIOFS.debug('lookup', arguments);
         return NATIVEIOFS.profile('lookup', function() {
-          var path = NATIVEIOFS.joinPaths(NATIVEIOFS.realPath(parent), name);
-          if (!io.exists(path)) {
-            throw FS.genericErrors[{{{ cDefine('ENOENT') }}}];
+          var parentPath = NATIVEIOFS.realPath(parent) + '_';
+
+	  var children = io.listByPrefix(parentPath);
+
+          var exists = false;
+          var mode = 511 /* 0777 */
+          for (var i = 0; i < children.length; ++i) {
+            var path = children[i].substr(parentPath.length);
+            if (path == name) {
+              exists = true;
+              mode |= {{{ cDefine('S_IFREG') }}};
+              break;
+            }
+
+            subdirName = name + '_';
+            if (path.startsWith(subdirName)) {
+              exists = true;
+              mode |= {{{ cDefine('S_IFDIR') }}};
+              break;
+            }
           }
 
-          var mode = {{{ cDefine('S_IFREG') }}} | 511 /* 0777 */
+          if (!exists) {
+            throw FS.genericErrors[{{{ cDefine('ENOENT') }}}];
+          }
 
           var node = FS.createNode(parent, name, mode);
           node.node_ops = NATIVEIOFS.node_ops;
@@ -176,7 +206,7 @@ mergeInto(LibraryManager.library, {
               var path = NATIVEIOFS.realPath(node);
 
               // Create non-existing file.
-              var fileHandle = io.open(path);
+              var fileHandle = io.openFile(path);
               fileHandle.close();
 
               node.handle = null;
@@ -192,7 +222,7 @@ mergeInto(LibraryManager.library, {
 
       rename: function (oldNode, newParentNode, newName) {
         NATIVEIOFS.debug('rename', arguments);
-	return NATIVEIOFS.profile('rename', function() {
+	NATIVEIOFS.profile('rename', function() {
           if (oldNode.isFolder) {
             // Only file renames are supported for now
             throw new FS.ErrnoError(ERRNO_CODES.EPERM);
@@ -230,7 +260,7 @@ mergeInto(LibraryManager.library, {
 	  // return duplicate entries. We probably need not just a list by
 	  // prefix but a listByPrefix up to the next underscore ('_').
 	  var children = io.listByPrefix(parentPath);
-          return children.map(child => NATIVEIOFS.realPathName(child));
+          return children.map(child => NATIVEIOFS.baseName(child));
 	});
       },
 
@@ -261,7 +291,7 @@ mergeInto(LibraryManager.library, {
                 var path = NATIVEIOFS.realPath(stream.node);
 
                 // Open existing file.
-                stream.handle = io.open(path);
+                stream.handle = io.openFile(path);
                 stream.node.handle = stream.handle;
                 stream.node.refcount = 1;
               }
@@ -299,11 +329,12 @@ mergeInto(LibraryManager.library, {
         return 0;
       },
 
+      // TODO(jabolopes): Switch read to the new interface.
       read: function (stream, buffer, offset, length, position) {
         NATIVEIOFS.debug('read', arguments);
         return NATIVEIOFS.profile('read', function() {
-          var data = new Uint8Array(stream.handle.read(position, length));
-          var bytesRead = data.length;
+          var data = buffer.subarray(offset, offset + length);
+          var bytesRead = stream.handle.read(data, position);
           buffer.set(data, offset);
           return bytesRead;
         });
