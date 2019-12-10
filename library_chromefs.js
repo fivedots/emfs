@@ -86,7 +86,7 @@ mergeInto(LibraryManager.library, {
           try {
             metadata = node.localReference.getMetadata();
           } catch (e) {
-            if (!e.code) throw e;
+            if (!('code' in e)) throw e;
             throw new FS.ErrnoError(-e.errno);
           }
           return {
@@ -156,8 +156,8 @@ mergeInto(LibraryManager.library, {
               node.localReference = parent.localReference.getFile(name, {create: true});
             }
           } catch (e) {
-            if (!e.code) throw e;
-            throw new FS.ErrnoError(e.errno);
+            if (!('code' in e)) throw e;
+            throw new FS.ErrnoError(-e.errno);
           }
           return node;
         });
@@ -169,7 +169,7 @@ mergeInto(LibraryManager.library, {
           try {
             oldNode.localReference.moveTo(newParentNode.localReference, newName);
           } catch (e) {
-            if (!e.code) throw e;
+            if (!('code' in e)) throw e;
             throw new FS.ErrnoError(-e.errno);
           }
         });
@@ -212,7 +212,7 @@ mergeInto(LibraryManager.library, {
             var entries = node.localReference.createReader().readEntries();
             return entries.map(entry => entry.name);
           } catch (e) {
-            if (!e.code) throw e;
+            if (!('code' in e)) throw e;
             throw new FS.ErrnoError(-e.errno);
           }
         });
@@ -243,8 +243,8 @@ mergeInto(LibraryManager.library, {
               stream.writeHandle = stream.node.localReference.createWriter();
             }
           } catch (e) {
-            if (!e.code) throw e;
-            throw new FS.ErrnoError(e.errno);
+            if (!('code' in e)) throw e;
+            throw new FS.ErrnoError(-e.errno);
           }
         });
       },
@@ -262,7 +262,7 @@ mergeInto(LibraryManager.library, {
               }
             }
           } catch (e) {
-            if (!e.code) throw e;
+            if (!('code' in e)) throw e;
             throw new FS.ErrnoError(-e.errno);
           }
         });
