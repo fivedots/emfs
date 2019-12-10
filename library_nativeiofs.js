@@ -77,11 +77,31 @@ mergeInto(LibraryManager.library, {
       }
     },
 
+    // directoryPath ensures path ends with a path delimiter ('_').
+    //
+    // Example:
+    // * directoryPath('_dir') = '_dir_'
+    // * directoryPath('_dir_') = '_dir_'
     directoryPath: function(path) {
       if (path.length && path.slice(-1) == '_') {
         return path;
       }
       return path + '_';
+    },
+
+    // extractFilename strips the parent path and drops suffixes after '_'.
+    //
+    // Example:
+    // * extractFilename('_dir', '_dir_myfile') = 'myfile'
+    // * extractFilename('_dir', '_dir_mydir_myfile') = 'mydir'
+    extractFilename: function(parent, path) {
+      parent = NATIVEIOFS.directoryPath(parent);
+      path = path.substr(parent.length);
+      var index = path.indexOf('_');
+      if (index == -1) {
+        return path;
+      }
+      return path.substr(0, index);
     },
 
     /* Filesystem implementation (public interface) */
@@ -283,12 +303,11 @@ mergeInto(LibraryManager.library, {
       readdir: function(node) {
         NATIVEIOFS.debug('readdir', arguments);
 	return NATIVEIOFS.profile('readdir', function() {
-          var parentPath = NATIVEIOFS.directoryPath(NATIVEIOFS.realPath(node));
-	  // TODO(jabolopes): If there are subdirectories, I suspect this may
-	  // return duplicate entries. We probably need not just a list by
-	  // prefix but a listByPrefix up to the next underscore ('_').
-	  var children = io.listByPrefix(parentPath);
-          return children.map(child => NATIVEIOFS.baseName(child));
+	  var parentPath = NATIVEIOFS.realPath(node);
+          var children = io.listByPrefix(parentPath);
+          children = children.map(child => NATIVEIOFS.extractFilename(parentPath, child));
+          // Remove duplicates.
+          return Array.from(new Set(children));
 	});
       },
 
