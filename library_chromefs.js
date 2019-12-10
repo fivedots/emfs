@@ -7,7 +7,7 @@ mergeInto(LibraryManager.library, {
   $CHROMEFS__deps: ['$ERRNO_CODES', '$FS'],
   $CHROMEFS__postset: '' +
       'if (typeof webkitRequestFileSystemSync !== "undefined") {' +
-      'var VFS = webkitRequestFileSystemSync(PERSISTENT, 1024*1024*10);' +
+      'var VFS = webkitRequestFileSystemSync(TEMPORARY, 1024*1024*10);' +
       'console.log("VFS", VFS);' +
       '}',
   $CHROMEFS: {
