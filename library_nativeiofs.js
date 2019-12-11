@@ -250,10 +250,7 @@ mergeInto(LibraryManager.library, {
           try {
             if (FS.isFile(mode)) {
               var path = NATIVEIOFS.realPath(node);
-
-              // Create non-existing file.
-              var fileHandle = io.openFile(path);
-              fileHandle.close();
+              io.createFile(path);
 
               node.handle = null;
               node.refcount = 0;
