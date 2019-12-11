@@ -185,22 +185,24 @@ mergeInto(LibraryManager.library, {
         NATIVEIOFS.debug('setattr', arguments);
 	NATIVEIOFS.profile('setattr', function() {
           if ('size' in attr) {
-            if (node.handle) {
-              metadata = node.handle.getAttributes();
-            } else {
-              try {
-                var path = NATIVEIOFS.realPath(node);
-                var handle = io.openFile(path);
-
-	        var attributes = { size: attr.size };
-                handle.setAttributes(attributes);
-              } catch (e) {
-                if (!('code' in e)) throw e;
-                throw new FS.ErrnoError(-e.errno);
-              } finally {
-                if (handle) {
-                  handle.close();
-                }
+            try {
+              var open = false;
+              var handle = null;
+              if (node.handle) {
+                open = false;
+                handle = node.handle;
+              } else {
+                open = true;
+                handle = io.openFile(NATIVEIOFS.realPath(node));
+              }
+	      var attributes = { size: attr.size };
+              handle.setAttributes(attributes);
+            } catch (e) {
+              if (!('code' in e)) throw e;
+              throw new FS.ErrnoError(-e.errno);
+            } finally {
+              if (open && handle) {
+                handle.close();
               }
             }
           }
