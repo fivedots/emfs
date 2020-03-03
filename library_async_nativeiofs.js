@@ -49,9 +49,12 @@ mergeInto(LibraryManager.library, {
     profile: function(name, wakeUp, fn) {
       var start = performance.now();
       var callback = function(ret) {
-        console.log('!!! profile callback ' + ret);
         var value = performance.now() - start;
         AsyncFSImpl.profileMetric(name, value);
+        if(ret == {{{cDefine('ENOSYS')}}}) {
+          console.log('WARNING: there was a profiled call to ', name,
+                        ' but this function is not implemented.');
+        }
         wakeUp(ret)
       }
       fn(callback)
@@ -60,6 +63,9 @@ mergeInto(LibraryManager.library, {
     /* Syscalls */
 
     lastFileDescriptor: 100,
+    //Associates a fileDescriptor (a number) with a FileHandle. This file handle
+    //is the object obtained from calling io.open and may be expanded with new
+    //fields (e.g. seek_position)
     fileDescriptorToFileHandle: {},
     knownPaths: {},
 
@@ -80,6 +86,29 @@ mergeInto(LibraryManager.library, {
           s += String.fromCharCode(parseInt(h.substr(i, 2), 16))
       }
       return decodeURIComponent(escape(s))
+    },
+
+    open: function(pathname, flags, mode, wakeUp) {
+      AsyncFSImpl.debug('open', arguments);
+      AsyncFSImpl.profile('open', wakeUp, function(callback) {
+        //TODO: consifer handling flags
+        //var create = flags & {{{ cDefine('O_CREAT') }}};
+        encodedPath = AsyncFSImpl.encodePath(pathname);
+        io.openFileAsync(encodedPath).then((fh) => {
+          fh.seek_position = 0;
+          var fd = AsyncFSImpl.lastFileDescriptor++;
+          AsyncFSImpl.fileDescriptorToFileHandle[""+fd] = fh;
+          AsyncFSImpl.knownPaths[pathname] = true;
+          callback(fd);
+        });
+      });
+    },
+
+    ioctl: function(fd, op, wakeUp) {
+      AsyncFSImpl.debug('ioctl', arguments);
+      AsyncFSImpl.profile('ioctl', wakeUp, function(callback) {
+        callback(-{{{cDefine('ENOSYS')}}});
+      })
     },
 
     populateStatBuffer: function(stat, buf) {
@@ -104,25 +133,24 @@ mergeInto(LibraryManager.library, {
       {{{ makeSetValue('buf', C_STRUCTS.stat.st_ino, 'stat.ino', 'i64') }}};
     },
 
-    open: function(pathname, flags, mode, wakeUp) {
-      AsyncFSImpl.debug('open', arguments);
-      AsyncFSImpl.profile('open', wakeUp, function(callback) {
-        //var create = flags & {{{ cDefine('O_CREAT') }}};
-        encodedPath = AsyncFSImpl.encodePath(pathname);
-        io.openFileAsync(encodedPath).then((fh) => {
-          fd = AsyncFSImpl.lastFileDescriptor++;
-          AsyncFSImpl.fileDescriptorToFileHandle[""+fd] = fh;
-          AsyncFSImpl.knownPaths[pathname] = true;
-          console.log('!!! open fd: ' + fd);
-          callback(fd);
-        });
-      });
-    },
-
-    ioctl: function(fd, op, wakeUp) {
-      AsyncFSImpl.debug('ioctl', arguments);
-      AsyncFSImpl.profile('ioctl', wakeUp, function(callback) {
-        callback(-{{{cDefine('ENOSYS')}}});
+    doStat: function(fh, buf) {
+      return fh.getAttributesAsync().then((attr) => {
+        var stat = {};
+        //TODO: handle directories and unfake all attrs except size
+        stat.dev = 1;
+        stat.ino = 1;
+        stat.mode = 1;
+        stat.nlink = 1;
+        stat.uid = 0;
+        stat.gid = 0;
+        stat.rdev = 1;
+        stat.size = attr.size;
+        stat.atime = new Date();
+        stat.mtime = new Date();
+        stat.ctime = new Date();
+        stat.blksize = 4096;
+        stat.blocks = Math.ceil(attr.size / stat.blksize);
+        AsyncFSImpl.populateStatBuffer(stat, buf);
       })
     },
 
@@ -133,27 +161,16 @@ mergeInto(LibraryManager.library, {
           callback(-{{{ cDefine('ENOENT') }}});
           return
         }
+        var openFh;
         encodedPath = AsyncFSImpl.encodePath(path)
         io.openFileAsync(encodedPath)
-            .then((fh) => {return fh.getAttributesAsync()})
-            .then((attr) => {
-              var stat = {};
-              //TODO: handle directories and unfake all attrs except size
-              stat.dev = 1;
-              stat.ino = 1;
-              stat.mode = 1;
-              stat.nlink = 1;
-              stat.uid = 0;
-              stat.gid = 0;
-              stat.rdev = 1;
-              stat.size = attr.size;
-              stat.atime = new Date();
-              stat.mtime = new Date();
-              stat.ctime = new Date();
-              stat.blksize = 4096;
-              stat.blocks = Math.ceil(attr.size / stat.blksize);
-              AsyncFSImpl.populateStatBuffer(stat, buf);
-              callback(0)
+            .then((fh) => {
+              openFh = fh;
+              return AsyncFSImpl.doStat(fh, buf);
+            }).then(() => {
+              return openFh.closeAsync();
+            }).then(() => {
+              callback(0);
             });
       })
     },
@@ -161,7 +178,10 @@ mergeInto(LibraryManager.library, {
     fstat: function(fd, buf, wakeUp) {
       AsyncFSImpl.debug('fstat', arguments);
       AsyncFSImpl.profile('fstat', wakeUp, function(callback) {
-        callback(-{{{cDefine('ENOSYS')}}});
+        var fh = AsyncFSImpl.fileDescriptorToFileHandle[fd];
+        AsyncFSImpl.doStat(fh, buf).then(() => {
+          callback(0);
+        })
       })
     },
 
@@ -196,7 +216,9 @@ mergeInto(LibraryManager.library, {
     fchown: function(fd, owner, group, wakeUp) {
       AsyncFSImpl.debug('fchown', arguments);
       AsyncFSImpl.profile('fchown', wakeUp, function(callback) {
-        callback(-{{{cDefine('ENOSYS')}}});
+        //We ignore permisions for now. If we started supporting an mtime, it
+        //would have to be updated
+        callback(0);
       })
     },
 
@@ -210,6 +232,14 @@ mergeInto(LibraryManager.library, {
     fcntl: function(fd, cmd, wakeUp) {
       AsyncFSImpl.debug('fcntl', arguments);
       AsyncFSImpl.profile('fcntl', wakeUp, function(callback) {
+        switch(cmd) {
+        case {{{ cDefine('F_SETLK') }}}:
+        case {{{ cDefine('F_SETLKW') }}}:
+        case {{{ cDefine('F_SETLK64') }}}:
+        case {{{ cDefine('F_SETLKW64') }}}:
+          callback(0); // Pretend that the locking was successful.
+          return;
+        }
         callback(-{{{cDefine('ENOSYS')}}});
       })
     },
@@ -219,22 +249,26 @@ mergeInto(LibraryManager.library, {
     read: function(fd, buffer, offset, count, wakeUp) {
       AsyncFSImpl.debug('read', arguments);
       AsyncFSImpl.profile('read', wakeUp, function(callback) {
-        callback(-{{{cDefine('ENOSYS')}}});
+        var fh = AsyncFSImpl.fileDescriptorToFileHandle[fd];
+        var receiver = buffer.subarray(offset, offset + count);
+        fh.readAsync(receiver, fh.seek_position).then((bytes_read) => {
+          //console.log('Read buffer: ',  receiver);
+          callback(bytes_read);
+        })
       })
     },
 
     write: function(fd, buffer, offset, count, wakeUp) {
       AsyncFSImpl.debug('write', arguments);
       AsyncFSImpl.profile('write', wakeUp, function(callback) {
-        callback(-{{{cDefine('ENOSYS')}}});
+        var fh = AsyncFSImpl.fileDescriptorToFileHandle[fd];
+        var provider = buffer.subarray(offset, offset + count);
+        fh.writeAsync(provider, fh.seek_position).then((bytes_written) => {
+          //console.log('Wrote buffer: ',  provider);
+          //console.log('bytes_written ', bytes_written);
+          callback(bytes_written);
+        })
       });
-    },
-
-    rmdir: function(path, wakeUp) {
-      AsyncFSImpl.debug('rmdir', arguments);
-      AsyncFSImpl.profile('rmdir', wakeUp, function(callback) {
-        callback(-{{{cDefine('ENOSYS')}}});
-      })
     },
 
     readlink: function(path, buf, bufsize, wakeUp) {
@@ -261,7 +295,9 @@ mergeInto(LibraryManager.library, {
     fsync: function(fd, wakeUp) {
       AsyncFSImpl.debug('fsync', arguments);
       AsyncFSImpl.profile('fsync', wakeUp, function(callback) {
-        callback(-{{{cDefine('ENOSYS')}}});
+        AsyncFSImpl.fileDescriptorToFileHandle[fd].syncAsync().then(() => {
+          callback(0);
+        })
       })
     },
 
@@ -286,10 +322,14 @@ mergeInto(LibraryManager.library, {
       })
     },
 
-    unlink: function(path,wakeUp) {
+    unlink: function(pathname, wakeUp) {
       AsyncFSImpl.debug('unlink', arguments);
       AsyncFSImpl.profile('unlink', wakeUp, function(callback) {
-        callback(-{{{cDefine('ENOSYS')}}});
+        encodedPath = AsyncFSImpl.encodePath(pathname);
+        io.unlinkAsync(encodedPath).then(() => {
+           delete AsyncFSImpl.knownPaths[pathname];
+           callback(0);
+         });
       })
     },
 
@@ -300,10 +340,26 @@ mergeInto(LibraryManager.library, {
       })
     },
 
+    //This function does not conform to the common linux llseek, rather it is
+    //used for wasi so it's expected to return the new offset relative to the
+    //start of a file via wakeUp
     llseek: function(fd, offset_high, offset_low, whence, wakeUp) {
       AsyncFSImpl.debug('llseek', arguments);
       AsyncFSImpl.profile('llseek', wakeUp, function(callback) {
-        callback(-{{{cDefine('ENOSYS')}}});
+        var HIGH_OFFSET = 0x100000000; // 2^32
+        // use an unsigned operator on low and shift high by 32-bits
+        var offset = offset_high * HIGH_OFFSET + (offset_low >>> 0);
+        var position = offset;
+        if (whence === {{{ cDefine('SEEK_CUR') }}}) {
+          position += AsyncFSImpl.fileDescriptorToFileHandle[fd].seek_position
+        } else if (whence === {{{ cDefine('SEEK_END') }}}) {
+          //TODO: implement if we are unlucky and the benchmark requires this
+          //branch
+          callback(-{{{cDefine('ENOSYS')}}});
+          return
+        }
+        AsyncFSImpl.fileDescriptorToFileHandle[fd].seek_position = position;
+        callback(position)
       })
     },
 
