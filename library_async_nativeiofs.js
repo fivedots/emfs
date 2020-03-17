@@ -16,18 +16,20 @@ mergeInto(LibraryManager.library, {
   //$AsyncFSImpl__deps: ['$FS'],
   /*$NATIVEIOFS__postset: '' +
       'if (typeof io !== "undefined") {' +
-      'console.log("IO", io);' +
+      //'console.log("IO", io);' +
       '}',*/
   /*$AsyncFSImpl__postset: '' +
-      'var NatFSRoot = FileSystemDirectoryHandle.getSystemDirectory({ type: "sandbox" });' +
-      'console.log("NatFSRoot", NatFSRoot);'*/
+      'addRandomDev();',*/
   $AsyncFSImpl: {
 
 
     /* Debugging */
 
     debug: function(...args) {
-      console.log('nativeiofs', arguments);
+      entries = io.listByPrefix('');
+      decodedEntries = [];
+      for (e of entries) { decodedEntries.push(AsyncFSImpl.decodePath(e)) }
+      console.log('nativeiofs', arguments, decodedEntries);
     },
 
     /* Profiling */
@@ -51,9 +53,12 @@ mergeInto(LibraryManager.library, {
       var callback = function(ret) {
         var value = performance.now() - start;
         AsyncFSImpl.profileMetric(name, value);
-        if(ret == {{{cDefine('ENOSYS')}}}) {
-          console.log('WARNING: there was a profiled call to ', name,
-                        ' but this function is not implemented.');
+        if(ret == -{{{cDefine('ENOSYS')}}}) {
+          console.log('WARNING: there was a profiled call to', name,
+                        'but this function is not implemented.');
+        } else if(ret < 0 /*&& (ret != -44 && name != 'stat')*/) {
+          console.log('WARNING: there was a profiled call to', name,
+                         'that returned a negative errno: ', ret);
         }
         wakeUp(ret)
       }
@@ -70,9 +75,9 @@ mergeInto(LibraryManager.library, {
     knownPaths: {},
 
     encodePath: function(path) {
-      //TODO: this is a random hex encoding decide and document on reasonable
+      //TODO: this is a aandom hex encoding decide and document on reasonable
       //scheme
-      var s = unescape(encodeURIComponent(s))
+      var s = unescape(encodeURIComponent(path))
       var h = ''
       for (var i = 0; i < s.length; i++) {
           h += s.charCodeAt(i).toString(16)
@@ -82,25 +87,100 @@ mergeInto(LibraryManager.library, {
 
     decodePath: function(hex) {
       var s = ''
-      for (var i = 0; i < h.length; i+=2) {
-          s += String.fromCharCode(parseInt(h.substr(i, 2), 16))
+      for (var i = 0; i < hex.length; i+=2) {
+          s += String.fromCharCode(parseInt(hex.substr(i, 2), 16))
       }
       return decodeURIComponent(escape(s))
+    },
+
+    randomFH: {
+      readAsync:  function(buffer, offset) {
+        return new Promise(function(resolve, reject) {
+          crypto.getRandomValues(buffer);
+          resolve(buffer.length)
+        });
+      },
+      read:  function(buffer, offset) {
+        crypto.getRandomValues(buffer);
+        return buffer.length;
+      },
+      closeAsync: function() {
+        return Promise.resolve();
+      },
+      seek_position: 0
+    },
+
+    fakeCWD: '/fake_async_nativeio_dir',
+
+    getAbsolutePath: function(pathname) {
+      if(!pathname.startsWith('/')) {
+        return AsyncFSImpl.fakeCWD + '/' + pathname;
+      }
+      return pathname;
+    },
+
+    printOpenFlag: function(flags) {
+      var knownFlags = {
+        'O_CREAT':{{{ cDefine('O_CREAT') }}},
+        'O_EXCL':{{{ cDefine('O_EXCL') }}},
+        'O_DIRECTORY':{{{ cDefine('O_DIRECTORY') }}},
+        'O_TRUNC':{{{ cDefine('O_TRUNC') }}},
+        'O_RDONLY':{{{ cDefine('O_RDONLY') }}},
+        'O_SYNC':{{{ cDefine('O_SYNC') }}},
+        'O_RDWR':{{{ cDefine('O_RDWR') }}},
+        'O_WRONLY':{{{ cDefine('O_WRONLY') }}},
+        'O_APPEND':{{{ cDefine('O_APPEND') }}},
+        'O_NOFOLLOW':{{{ cDefine('O_NOFOLLOW') }}},
+        'O_ACCMODE':{{{ cDefine('O_ACCMODE') }}}
+      }
+      for (kf in knownFlags) {
+        if(flags & knownFlags[kf]){
+          console.log('!!! open received flag', kf)
+        }
+      }
     },
 
     open: function(pathname, flags, mode, wakeUp) {
       AsyncFSImpl.debug('open', arguments);
       AsyncFSImpl.profile('open', wakeUp, function(callback) {
+        //TODO: consider handling opens for directories
         //TODO: consifer handling flags
         //var create = flags & {{{ cDefine('O_CREAT') }}};
-        encodedPath = AsyncFSImpl.encodePath(pathname);
-        io.openFileAsync(encodedPath).then((fh) => {
+        AsyncFSImpl.printOpenFlag(flags);
+        if(flags & {{{ cDefine('O_APPEND') }}}) {
+          console.log('WARNING open called with unsupported append flag');
+        }
+
+        if(flags & {{{ cDefine('O_TRUNC') }}}) {
+          console.log('WARNING open called with unsupported O_TRUNC flag');
+        }
+
+        var absolutePath = AsyncFSImpl.getAbsolutePath(pathname);
+
+        getFD = (fh) => {
           fh.seek_position = 0;
           var fd = AsyncFSImpl.lastFileDescriptor++;
-          AsyncFSImpl.fileDescriptorToFileHandle[""+fd] = fh;
-          AsyncFSImpl.knownPaths[pathname] = true;
+          AsyncFSImpl.fileDescriptorToFileHandle[fd] = fh;
+          AsyncFSImpl.knownPaths[absolutePath] = true;
+          console.log('open path', absolutePath, 'fd', fd);
           callback(fd);
-        });
+        }
+
+        if(absolutePath == '/dev/urandom') {
+          getFD(AsyncFSImpl.randomFH);
+          return;
+        }
+        var encodedPath = AsyncFSImpl.encodePath(absolutePath);
+        if(AsyncFSImpl.knownPaths[encodedPath]) {
+          console.log('open known file', absolutePath, 'listByPrefix' ,io.listByPrefix(encodedPath))
+        } else {
+          console.log('open UNknown file', absolutePath, 'listByPrefix' ,io.listByPrefix(encodedPath))
+        }
+
+        //io.openFileAsync(encodedPath).then(getFD);
+        console.log('sync open')
+        var fd = io.openFile(encodedPath);
+        getFD(fd);
       });
     },
 
@@ -134,24 +214,44 @@ mergeInto(LibraryManager.library, {
     },
 
     doStat: function(fh, buf) {
-      return fh.getAttributesAsync().then((attr) => {
-        var stat = {};
-        //TODO: handle directories and unfake all attrs except size
-        stat.dev = 1;
-        stat.ino = 1;
-        stat.mode = 1;
-        stat.nlink = 1;
-        stat.uid = 0;
-        stat.gid = 0;
-        stat.rdev = 1;
-        stat.size = attr.size;
-        stat.atime = new Date();
-        stat.mtime = new Date();
-        stat.ctime = new Date();
-        stat.blksize = 4096;
-        stat.blocks = Math.ceil(attr.size / stat.blksize);
-        AsyncFSImpl.populateStatBuffer(stat, buf);
-      })
+     // return fh.getAttributesAsync().then((attr) => {
+     //   console.log('doStat fh', fh, 'size', attr.size)
+     //   var stat = {};
+     //   //TODO: handle directories and unfake all attrs except size
+     //   stat.dev = 1;
+     //   stat.ino = 1;
+     //   stat.mode = 1;
+     //   stat.nlink = 1;
+     //   stat.uid = 0;
+     //   stat.gid = 0;
+     //   stat.rdev = 1;
+     //   stat.size = attr.size;
+     //   stat.atime = new Date();
+     //   stat.mtime = new Date();
+     //   stat.ctime = new Date();
+     //   stat.blksize = 4096;
+     //   stat.blocks = Math.ceil(attr.size / stat.blksize);
+     //   AsyncFSImpl.populateStatBuffer(stat, buf);
+     // })
+
+      var attr = fh.getAttributes()
+      console.log('doStat fh', fh, 'size', attr.size)
+      var stat = {};
+      //TODO: handle directories and unfake all attrs except size
+      stat.dev = 1;
+      stat.ino = 1;
+      stat.mode = 1;
+      stat.nlink = 1;
+      stat.uid = 0;
+      stat.gid = 0;
+      stat.rdev = 1;
+      stat.size = attr.size;
+      stat.atime = new Date();
+      stat.mtime = new Date();
+      stat.ctime = new Date();
+      stat.blksize = 4096;
+      stat.blocks = Math.ceil(attr.size / stat.blksize);
+      AsyncFSImpl.populateStatBuffer(stat, buf);
     },
 
     stat: function(path, buf, wakeUp) {
@@ -161,17 +261,23 @@ mergeInto(LibraryManager.library, {
           callback(-{{{ cDefine('ENOENT') }}});
           return
         }
-        var openFh;
+        var openFH;
         encodedPath = AsyncFSImpl.encodePath(path)
-        io.openFileAsync(encodedPath)
-            .then((fh) => {
-              openFh = fh;
-              return AsyncFSImpl.doStat(fh, buf);
-            }).then(() => {
-              return openFh.closeAsync();
-            }).then(() => {
-              callback(0);
-            });
+        //io.openFileAsync(encodedPath)
+        //    .then((fh) => {
+        //      openFH = fh;
+        //      return AsyncFSImpl.doStat(fh, buf);
+        //    }).then(() => {
+        //      return openFH.closeAsync();
+        //    }).then(() => {
+        //      callback(0);
+        //    });
+
+        console.log('sync stat');
+        var openFH = io.openFile(encodedPath)
+        AsyncFSImpl.doStat(openFH, buf);
+        openFH.close();
+        callback(0);
       })
     },
 
@@ -179,9 +285,13 @@ mergeInto(LibraryManager.library, {
       AsyncFSImpl.debug('fstat', arguments);
       AsyncFSImpl.profile('fstat', wakeUp, function(callback) {
         var fh = AsyncFSImpl.fileDescriptorToFileHandle[fd];
-        AsyncFSImpl.doStat(fh, buf).then(() => {
-          callback(0);
-        })
+        //AsyncFSImpl.doStat(fh, buf).then(() => {
+        //  callback(0);
+        //})
+
+        console.log('sync fstat')
+        AsyncFSImpl.doStat(fh, buf)
+        callback(0);
       })
     },
 
@@ -231,16 +341,13 @@ mergeInto(LibraryManager.library, {
 
     fcntl: function(fd, cmd, wakeUp) {
       AsyncFSImpl.debug('fcntl', arguments);
+      debugger;
       AsyncFSImpl.profile('fcntl', wakeUp, function(callback) {
-        switch(cmd) {
-        case {{{ cDefine('F_SETLK') }}}:
-        case {{{ cDefine('F_SETLKW') }}}:
-        case {{{ cDefine('F_SETLK64') }}}:
-        case {{{ cDefine('F_SETLKW64') }}}:
-          callback(0); // Pretend that the locking was successful.
-          return;
+        if( cmd != {{{ cDefine('F_SETLK') }}} ) {
+          callback(-{{{cDefine('ENOSYS')}}});
+          return
         }
-        callback(-{{{cDefine('ENOSYS')}}});
+        callback(0); // Pretend that the locking was successful.
       })
     },
 
@@ -249,25 +356,63 @@ mergeInto(LibraryManager.library, {
     read: function(fd, buffer, offset, count, wakeUp) {
       AsyncFSImpl.debug('read', arguments);
       AsyncFSImpl.profile('read', wakeUp, function(callback) {
+        console.log('read sync')
         var fh = AsyncFSImpl.fileDescriptorToFileHandle[fd];
         var receiver = buffer.subarray(offset, offset + count);
-        fh.readAsync(receiver, fh.seek_position).then((bytes_read) => {
-          //console.log('Read buffer: ',  receiver);
-          callback(bytes_read);
-        })
+        //fh.readAsync(receiver, fh.seek_position).then((bytes_read) => {
+        //  if(count!=bytes_read) {
+        //    console.log('WARNING read returned less than the expected bytes (got', bytes_read, 'want', count, ')')
+        //  }
+        //  fh.seek_position += bytes_read;
+        //  callback(bytes_read);
+        //})
+
+        var bytes_read = fh.read(receiver, fh.seek_position);
+        if(count!=bytes_read) {
+          console.log('WARNING read returned less than the expected bytes (got', bytes_read, 'want', count, ')')
+        }
+        fh.seek_position += bytes_read;
+        callback(bytes_read);
       })
     },
 
+    //TODO: consider extracting common functionailty with writev
     write: function(fd, buffer, offset, count, wakeUp) {
       AsyncFSImpl.debug('write', arguments);
       AsyncFSImpl.profile('write', wakeUp, function(callback) {
         var fh = AsyncFSImpl.fileDescriptorToFileHandle[fd];
         var provider = buffer.subarray(offset, offset + count);
-        fh.writeAsync(provider, fh.seek_position).then((bytes_written) => {
-          //console.log('Wrote buffer: ',  provider);
-          //console.log('bytes_written ', bytes_written);
-          callback(bytes_written);
-        })
+        //fh.writeAsync(provider, fh.seek_position).then((bytes_written) => {
+        //  if(count!=bytes_written) {
+        //    console.log('WARNING write returned less than the expected bytes (got', bytes_written, 'want', count, ')');
+        //  }
+        //  fh.seek_position += bytes_written;
+        //  return bytes_written;
+        //}).then((bytes_written) => {
+        //  var rb = new Int8Array(count);
+        //  fh.read(rb, fh.seek_position - bytes_written);
+        //  for(var i = 0; i < count; i++) {
+        //    if(rb[i] != provider[i]) {
+        //      console.log('FATAL confirmation read does not match write buffer. rb',rb, 'wb', provider)
+        //    }
+        //  }
+        //  callback(bytes_written);
+        //})
+
+        console.log('sync write')
+        var bytes_written = fh.write(provider, fh.seek_position);
+        if(count!=bytes_written) {
+          console.log('WARNING write returned less than the expected bytes (got', bytes_written, 'want', count, ')');
+        }
+        fh.seek_position += bytes_written;
+        var rb = new Int8Array(count);
+        fh.read(rb, fh.seek_position - bytes_written);
+        for(var i = 0; i < count; i++) {
+          if(rb[i] != provider[i]) {
+            console.log('FATAL confirmation read does not match write buffer. rb',rb, 'wb', provider)
+          }
+        }
+        callback(bytes_written);
       });
     },
 
@@ -311,32 +456,80 @@ mergeInto(LibraryManager.library, {
     readv: function(fd, iovs, wakeUp) {
       AsyncFSImpl.debug('readv', arguments);
       AsyncFSImpl.profile('readv', wakeUp, function(callback) {
+        console.log('!!!! readv')
         callback(-{{{cDefine('ENOSYS')}}});
       })
     },
 
     writev: function(fd, iovs, wakeUp) {
+      //console.log('!!! writev', arguments);
       AsyncFSImpl.debug('writev', arguments);
       AsyncFSImpl.profile('writev', wakeUp, function(callback) {
-        callback(-{{{cDefine('ENOSYS')}}});
+        var res = 0;
+        var iovSum = 0;
+        var fh = AsyncFSImpl.fileDescriptorToFileHandle[fd];
+        var chain = Promise.resolve();
+
+        for(iov of iovs) {
+          chain = chain.then(() => {
+            iovSum += iov.len;
+            var provider = HEAPU8.subarray(iov.ptr, iov.ptr + iov.len);
+            return fh.writeAsync(provider, fh.seek_position)
+          }).then((bytes_written) => {
+              res += (bytes_written);
+          })
+        }
+
+        chain.then((bytes_written) => {
+          res += n;
+        }).catch((err) => {
+          console.log('WARNING writev returned an err:', err, 'after writing', res, 'bytes');
+        }).finally(() => {
+          //console.log('!!! writev wrote', bytes_written, 'of', iovSum)
+          callback(res)
+        })
       })
     },
 
     unlink: function(pathname, wakeUp) {
       AsyncFSImpl.debug('unlink', arguments);
       AsyncFSImpl.profile('unlink', wakeUp, function(callback) {
-        encodedPath = AsyncFSImpl.encodePath(pathname);
-        io.unlinkAsync(encodedPath).then(() => {
-           delete AsyncFSImpl.knownPaths[pathname];
-           callback(0);
-         });
+        var absolutePath = AsyncFSImpl.getAbsolutePath(pathname);
+        if(!AsyncFSImpl.knownPaths[absolutePath]) {
+          callback( -{{{ cDefine('ENOENT') }}} );
+          return;
+        }
+
+        encodedPath = AsyncFSImpl.encodePath(absolutePath);
+        //io.unlinkAsync(encodedPath).then(() => {
+        //     delete AsyncFSImpl.knownPaths[absolutePath];
+        //   callback(0);
+        // }).catch((ret) => {
+        //   //TODO: handle different error codes
+        //   console.log('!!! Error unlinking', absolutePath, 'ret:', ret);
+        //   delete AsyncFSImpl.knownPaths[absolutePath];
+        //   callback(ret)
+        // });
+
+        try {
+          console.log('unlink sync')
+          io.unlink(encodedPath);
+        } catch(err) {
+          console.log(err);
+        } finally {
+          delete AsyncFSImpl.knownPaths[absolutePath];
+          callback(0);
+        }
       })
     },
 
     truncate: function(fd, length, wakeUp) {
       AsyncFSImpl.debug('truncate', arguments);
       AsyncFSImpl.profile('truncate', wakeUp, function(callback) {
-        callback(-{{{cDefine('ENOSYS')}}});
+        var fh = AsyncFSImpl.fileDescriptorToFileHandle[fd]
+        fh.setAttributesAsync({size: length}).then(() => {
+          callback(0);
+        })
       })
     },
 
@@ -351,6 +544,7 @@ mergeInto(LibraryManager.library, {
         var offset = offset_high * HIGH_OFFSET + (offset_low >>> 0);
         var position = offset;
         if (whence === {{{ cDefine('SEEK_CUR') }}}) {
+          console.log('llseek SEEK_CUR')
           position += AsyncFSImpl.fileDescriptorToFileHandle[fd].seek_position
         } else if (whence === {{{ cDefine('SEEK_END') }}}) {
           //TODO: implement if we are unlucky and the benchmark requires this
